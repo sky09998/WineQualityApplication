@@ -1,41 +1,35 @@
 import sys
+import shutil
+import os
+import boto3
 from pyspark.sql import SparkSession
-from pyspark.ml import PipelineModel
-from pyspark.ml import Pipeline
+from pyspark.sql.types import IntegerType, FloatType
+from pyspark.ml import PipelineModel, Pipeline
 from pyspark.ml.feature import VectorAssembler, StandardScaler
-from pyspark.ml.classification import LogisticRegression, DecisionTreeClassifier
+from pyspark.ml.classification import DecisionTreeClassifier, LogisticRegression
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
-import boto3
 
+# Initialize S3 client
 s3_client = boto3.client('s3')
-
-def get_data_from_s3(bucket_name, file_key):
-    s3_client.get_object(bucket_name, file_key)
-
-def upload_model_to_s3(bucket_name, local_model_path, s3_model_key):
-    s3_client.upload_file(local_model_path, bucket_name, s3_model_key)
 
 def grab_col_names(dataframe, cat_th=10, car_th=20):
     cat_cols, num_but_cat, cat_but_car = [], [], []
     for field in dataframe.schema.fields:
+        distinct_count = dataframe.select(field.name).distinct().count()
         if str(field.dataType) == 'StringType':
-            if dataframe.select(field.name).distinct().count() > car_th:
+            if distinct_count > car_th:
                 cat_but_car.append(field.name)
             else:
                 cat_cols.append(field.name)
-        else:
-            if dataframe.select(field.name).distinct().count() < cat_th:
-                num_but_cat.append(field.name)
+        elif distinct_count < cat_th:
+            num_but_cat.append(field.name)
 
-    cat_cols = list(set(cat_cols + num_but_cat) - set(cat_but_car))
-    num_cols = [field.name for field in dataframe.schema.fields if str(field.dataType) != 'StringType' and field.name not in num_but_cat]
-
-    print(f"Observations: {dataframe.count()}, Variables: {len(dataframe.columns)}")
-    print(f'cat_cols: {len(cat_cols)}, num_cols: {len(num_cols)}, cat_but_car: {len(cat_but_car)}, num_but_cat: {len(num_but_cat)}')
+    cat_cols = list(set(cat_cols) - set(cat_but_car))
+    num_cols = [f.name for f in dataframe.schema.fields if str(f.dataType) != 'StringType' and f.name not in num_but_cat]
     return cat_cols, num_cols, cat_but_car
 
-def get_models(labelCol):
+def get_decision_tree_params(labelCol):
     lr = LogisticRegression(featuresCol="scaledFeatures", labelCol=labelCol)
     dt = DecisionTreeClassifier(featuresCol="scaledFeatures", labelCol=labelCol)
 
@@ -52,78 +46,81 @@ def get_models(labelCol):
              .build())
     ]
 
-def evaluate_models(training_data, validation_data, featuresCol, labelCol):
-    featureIndexer = VectorAssembler(inputCols=featuresCol, outputCol="features")
+def evaluate_models(train_data, valid_data, featuresCol, labelCol):
+    assembler = VectorAssembler(inputCols=featuresCol, outputCol="features")
     scaler = StandardScaler(inputCol="features", outputCol="scaledFeatures")
-    best_f1_score, best_cv_model, best_model_name = 0, None, ""
-    evaluator = MulticlassClassificationEvaluator(labelCol=labelCol, predictionCol="prediction", metricName="f1")
+    evaluator = MulticlassClassificationEvaluator(labelCol=labelCol, metricName="f1")
+    best_f1_score, best_model = 0, None
 
-    for name, model, paramGrid in get_models(labelCol):
-        pipeline = Pipeline(stages=[featureIndexer, scaler, model])
-        cv = CrossValidator(estimator=pipeline,
-                            estimatorParamMaps=paramGrid,
-                            evaluator=evaluator,
-                            numFolds=5)  # Number of folds for cross-validation
-        cv_model = cv.fit(training_data)
-        predictions = cv_model.transform(validation_data)
-        f1_score = evaluator.evaluate(predictions)
-
-        print(f"{name} - Best F1 Score: {f1_score:.2f}")
-
+    for name, model, paramGrid in get_decision_tree_params(labelCol):
+        pipeline = Pipeline(stages=[assembler, scaler, model])
+        cv = CrossValidator(estimator=pipeline, estimatorParamMaps=paramGrid, evaluator=evaluator, numFolds=5)
+        cv_model = cv.fit(train_data)
+        f1_score = evaluator.evaluate(cv_model.transform(valid_data))
         if f1_score > best_f1_score:
-            best_f1_score = f1_score
-            best_model_name = name
-            best_cv_model = cv_model.bestModel
+            best_f1_score, best_model = f1_score, cv_model.bestModel
+            print(f"{name} - Best F1 Score: {f1_score:.2f}")
 
-    if best_cv_model:
-        # best_cv_model.write().overwrite().save("s3a://winequalityapplication/model/best_model")
-        print(f"Best Model: {best_model_name} with F1 Score: {best_f1_score:.2f}")
+    return best_model
 
-    return best_cv_model
+def fetch_dataframe_from_s3(key, spark, data_transformations):
+    response = s3_client.get_object(Bucket='winequalityapplication', Key=key)
+    data_string = response['Body'].read().decode('utf-8').replace('"', '')
+    data_list = [tuple(x.split(';')) for x in data_string.strip().split('\r\n') if x]
+    columns = list(data_list.pop(0))
+    df = spark.createDataFrame(data_list, columns)
+    return data_transformations(df)
 
-def predict_new_data(new_data_path):
-    spark = SparkSession.builder.appName("Prediction Using Best Model").getOrCreate()
-    new_data = spark.read.csv(get_data_from_s3(new_data_s3_path, "Test"), header=True, inferSchema=True)
-    temp_quality_column_data = new_data.select("quality")
-    new_data = new_data.drop("quality")
-    best_model = PipelineModel.load("s3a://winequalityapplication/best_model")
-    predictions = best_model.transform(new_data)
-    predictions.select("prediction").show()
+def data_transformations(df):
+    float_cols = ["fixed acidity", "volatile acidity", "citric acid", "residual sugar", 
+                  "chlorides", "free sulfur dioxide", "total sulfur dioxide", "density", 
+                  "pH", "sulphates", "alcohol"]
+    for col in float_cols:
+        df = df.withColumn(col, df[col].cast(FloatType()))
+    df = df.withColumn('quality', df['quality'].cast(IntegerType()))
+    return df
+
+def predict_new_data(new_data_path, spark, best_model):
+    new_df = fetch_dataframe_from_s3(new_data_path, spark, data_transformations)
+    temp_quality_column_data = new_df.select("quality")
+    new_df = new_df.drop("quality")
+    predictions = best_model.transform(new_df)
+    predictions.show()  # Display some of the predictions
     predictions_with_column = predictions.join(temp_quality_column_data)
     evaluator = MulticlassClassificationEvaluator(labelCol="quality", predictionCol="prediction", metricName="f1")
     f1Score = evaluator.evaluate(predictions_with_column)
-    print("f1Score ",f1Score)
+    print(f"f1Score {f1Score:.2f}")
     evaluator = MulticlassClassificationEvaluator(labelCol="quality", predictionCol="prediction", metricName="accuracy")
     accuracy = evaluator.evaluate(predictions_with_column)
-    print("accuracy ",accuracy)
-    spark.stop()
+    print(f"accuracy {accuracy:.2f}")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:  # Adjusted for S3 file paths
-        print("Usage: spark-submit script.py <TrainingDataSet S3 path> <ValidationDataSet S3 path> <NewDataSet S3 path> <S3 Model Bucket>")
-        sys.exit(-1)
+    spark = SparkSession.builder.appName("Wine Quality Prediction").getOrCreate()
+    
+    train_df = fetch_dataframe_from_s3('TrainingDataset.csv', spark, data_transformations)
+    valid_df = fetch_dataframe_from_s3('ValidationDataset.csv', spark, data_transformations)
+    cat_cols, num_cols, _ = grab_col_names(train_df)
 
-    spark = SparkSession.builder.appName("Model Training and Validation").getOrCreate()
-    training_data_s3_path, validation_data_s3_path, new_data_s3_path, model_bucket = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-    # Read datasets from local file system
-    training_data = spark.read.csv(get_data_from_s3(training_data_s3_path, "CleanTrainingDataset.csv"), header=True, inferSchema=True)
-    validation_data = spark.read.csv(get_data_from_s3(validation_data_s3_path, "CleanValidationDataset.csv"), header=True, inferSchema=True)
-
-    cat_cols, num_cols, cat_but_car = grab_col_names(training_data)
     featuresCol = cat_cols + num_cols
-    featuresCol = [col for col in featuresCol if col != 'quality']
-    labelCol = 'quality'  # Update this as per your dataset
+    if 'quality' in featuresCol:
+        featuresCol.remove('quality')
 
     if '--train' in sys.argv:
-        best_model = evaluate_models(training_data, validation_data, featuresCol, labelCol)
-        # Save best model to local file system
-        local_model_path = '/best_model'
-        best_model.write().overwrite().save(local_model_path)
-        # Upload best model to S3
-        upload_model_to_s3(model_bucket, local_model_path, 'best_model')
+        best_model = evaluate_models(train_df, valid_df, featuresCol, 'quality')
+        # Save best model to S3
+        model_path = 'best_model_test'
+        best_model.write().overwrite().save(model_path)
+        shutil.make_archive(model_path, 'zip', model_path)
+        s3_client.upload_file(Filename=f'{model_path}.zip', Bucket='winequalityapplication', Key='best_model_test.zip')
+        shutil.rmtree(model_path)
 
     if '--predict' in sys.argv:
-        # Download new data from S3 to local file system
-        predict_new_data(new_data_s3_path)
+        best_model_response = s3_client.get_object(Bucket='winequalityapplication',Key='best_model_test.zip')
+        file_content = best_model_response['Body'].read()
+        with open('temp_model.zip', 'wb') as file:
+            file.write(file_content)
+        shutil.unpack_archive('temp_model.zip', 'best_model', 'zip')  
+        best_model = PipelineModel.load("best_model")
+        predict_new_data('TestDataset.csv', spark, best_model)
 
     spark.stop()
