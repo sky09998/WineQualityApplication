@@ -10,8 +10,30 @@ from pyspark.ml.classification import DecisionTreeClassifier, LogisticRegression
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
 
+
+access_key = os.getenv("ACCESSKey")
+secret_key = os.getenv("SECRETKey")
+
 # Initialize S3 client
 s3_client = boto3.client('s3')
+
+def download_directory_from_s3(bucket_name, s3_folder, local_dir):
+    """Download an entire directory from an S3 bucket to a local path."""
+    s3 = boto3.client('s3')
+    paginator = s3.get_paginator('list_objects_v2')
+    for page in paginator.paginate(Bucket=bucket_name, Prefix=s3_folder):
+        for obj in page.get('Contents', []):
+            # Define the local path to save the file
+            local_file_path = os.path.join(local_dir, obj['Key'][len(s3_folder):])
+            local_file_dir = os.path.dirname(local_file_path)
+
+            # Ensure the local directory exists
+            if not os.path.exists(local_file_dir):
+                os.makedirs(local_file_dir)
+
+            # Download the file
+            s3.download_file(bucket_name, obj['Key'], local_file_path)
+            print(f"Downloaded {obj['Key']} to {local_file_path}")
 
 def grab_col_names(dataframe, cat_th=10, car_th=20):
     cat_cols, num_but_cat, cat_but_car = [], [], []
@@ -72,8 +94,8 @@ def fetch_dataframe_from_s3(key, spark, data_transformations):
     return data_transformations(df)
 
 def data_transformations(df):
-    float_cols = ["fixed acidity", "volatile acidity", "citric acid", "residual sugar", 
-                  "chlorides", "free sulfur dioxide", "total sulfur dioxide", "density", 
+    float_cols = ["fixed acidity", "volatile acidity", "citric acid", "residual sugar",
+                  "chlorides", "free sulfur dioxide", "total sulfur dioxide", "density",
                   "pH", "sulphates", "alcohol"]
     for col in float_cols:
         df = df.withColumn(col, df[col].cast(FloatType()))
@@ -95,8 +117,13 @@ def predict_new_data(new_data_path, spark, best_model):
     print(f"accuracy {accuracy:.2f}")
 
 if __name__ == "__main__":
-    spark = SparkSession.builder.appName("Wine Quality Prediction").getOrCreate()
-    
+    spark = SparkSession.builder.appName("Wine Quality Prediction") \
+        .config("spark.jars", "hadoop-aws-3.0.0.jar,aws-java-sdk-1.11.375.jar") \
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem").getOrCreate()
+
+    spark._jsc.hadoopConfiguration().set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+    spark._jsc.hadoopConfiguration().set("fs.s3a.access.key", f"{access_key}")
+    spark._jsc.hadoopConfiguration().set("fs.s3a.secret.key", f"{secret_key}")
     train_df = fetch_dataframe_from_s3('TrainingDataset.csv', spark, data_transformations)
     valid_df = fetch_dataframe_from_s3('ValidationDataset.csv', spark, data_transformations)
     cat_cols, num_cols, _ = grab_col_names(train_df)
@@ -108,19 +135,12 @@ if __name__ == "__main__":
     if '--train' in sys.argv:
         best_model = evaluate_models(train_df, valid_df, featuresCol, 'quality')
         # Save best model to S3
-        model_path = 'best_model_test'
+        model_path = "s3://winequalityapplication/bestmodel"
         best_model.write().overwrite().save(model_path)
-        shutil.make_archive(model_path, 'zip', model_path)
-        s3_client.upload_file(Filename=f'{model_path}.zip', Bucket='winequalityapplication', Key='best_model_test.zip')
-        shutil.rmtree(model_path)
 
     if '--predict' in sys.argv:
-        best_model_response = s3_client.get_object(Bucket='winequalityapplication',Key='best_model_test.zip')
-        file_content = best_model_response['Body'].read()
-        with open('temp_model.zip', 'wb') as file:
-            file.write(file_content)
-        shutil.unpack_archive('temp_model.zip', 'best_model', 'zip')  
-        best_model = PipelineModel.load("best_model")
+        download_directory_from_s3('winequalityapplication','bestmodel/','/home/hadoop/bestmodel')
+        best_model = PipelineModel.load('/home/hadoop/bestmodel')
         predict_new_data('TestDataset.csv', spark, best_model)
 
     spark.stop()
