@@ -32,9 +32,9 @@ This project develops a Python application leveraging the PySpark interface on a
 •⁠  ⁠Run initial setup commands:
   ⁠ aws s3api get-object --bucket winequalityapplication --key init.sh /home/hadoop/init.sh ⁠
 
-  ⁠ export ACCESSKey=<your-access-key> ⁠
+  ⁠ export ACCESSKey=access-key
 
-  ⁠ export SECRETKey=<your-secret-key> ⁠
+  ⁠ export SECRETKey=secret-key
 
   ⁠ sh init.sh ⁠
 
@@ -43,8 +43,7 @@ This project develops a Python application leveraging the PySpark interface on a
 
 ⁠ bash
 spark-submit WineQualityTrainingAndPrediction.py --train
- ⁠
-⁠ bash
+ bash
 python WineQualityTrainingAndPrediction.py --predict
  ⁠
 ## Docker Implementation
