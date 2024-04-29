@@ -43,7 +43,9 @@ This project develops a Python application leveraging the PySpark interface on a
 
 ⁠ bash
 spark-submit WineQualityTrainingAndPrediction.py --train
- bash
+
+
+ bash
 python WineQualityTrainingAndPrediction.py --predict
  ⁠
 ## Docker Implementation
@@ -54,7 +56,7 @@ python WineQualityTrainingAndPrediction.py --predict
    - Prepare the Dockerfile with the required configurations and dependencies.
 
 2.⁠ ⁠*Create a Docker Repository*
-   - Navigate to your Docker profile and create a repository named ⁠ mlapplication_pa2 ⁠.
+   - Navigate to your Docker profile and create a repository named ⁠ winequalityapplication ⁠.
 
 3.⁠ ⁠*Build the Docker Image*
    - Run the following command to build your Docker image:
