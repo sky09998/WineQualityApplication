@@ -17,8 +17,14 @@ This project develops a Python application leveraging the PySpark interface on a
 
 #### Amazon S3
 •⁠  ⁠Create a bucket and upload the training and validation datasets.
+
+
 •⁠  ⁠Upload ⁠ WineQualityTrainingAndPrediction.py ⁠.
+
+
 •⁠  ⁠Create a folder named ⁠ bestmodel ⁠ to store the best model from training.
+
+
 
 #### Amazon EMR
 <img width="468" alt="image" src="https://github.com/sky09998/WineQualityApplication/assets/105906119/9f8b1437-83c5-4623-b808-7d6557dcc45a">
@@ -26,10 +32,20 @@ This project develops a Python application leveraging the PySpark interface on a
 
 #### EC2 Configuration
 •⁠  ⁠Choose the Master EC2 instance from your cluster setup.
+
+
 •⁠  ⁠Add an inbound rule to the security group for SSH access from your specified custom IP.
+
+
 •⁠  ⁠Log in to the Master EC2 instance using PowerShell, utilizing the Public DNS with the SSH command authenticated by the previously created EC2 Key pair.
+
+
 •⁠  ⁠Configure AWS Credentials and AWS Session Token.
+
+
 •⁠  ⁠Run initial setup commands:
+
+
   ⁠ aws s3api get-object --bucket winequalityapplication --key init.sh /home/hadoop/init.sh ⁠
 
   ⁠ export ACCESSKey=access-key
