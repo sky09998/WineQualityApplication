@@ -46,13 +46,13 @@ This project develops a Python application leveraging the PySpark interface on a
 •⁠  ⁠Run initial setup commands:
 
 
-              ⁠ aws s3api get-object --bucket winequalityapplication --key init.sh /home/hadoop/init.sh ⁠
-            
-              ⁠ export ACCESSKey=access-key
-            
-              ⁠ export SECRETKey=secret-key
-            
-              ⁠ sh init.sh ⁠
+        ⁠ aws s3api get-object --bucket winequalityapplication --key init.sh /home/hadoop/init.sh ⁠
+      
+        ⁠ export ACCESSKey=access-key
+      
+        ⁠ export SECRETKey=secret-key
+      
+        ⁠ sh init.sh ⁠
 
 
 ### Code Implementation
